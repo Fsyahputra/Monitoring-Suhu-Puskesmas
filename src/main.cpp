@@ -1,409 +1,281 @@
 #include <Arduino.h>
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-#include <ESPAsyncTCP.h>
-#include <LittleFS.h>
-#include <json_generator.h>
-#include <LiquidCrystal_I2C.h>
+#include <Constant.h>
+#include <UserFile.h>
+#include <WiFiFile.h>
 #include <Wire.h>
+#include <Adafruit_SSD1306.h>
 #include <DHT.h>
+#include <Adafruit_GFX.h>
+#include <Sensor.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Firebase_ESP_Client.h>
 #include <BlynkSimpleEsp32.h>
-#include <ArduinoJson.h>
 
-const int DHT_PIN = 4;
-const int DHT_TYPE = DHT22;
-const int LED_PIN = 2;
-const char *AUTH_TOKEN = "your_auth_token";
-const char *BLYNK_SERVER = "blynk-cloud.com";
-const int BLYNK_PORT = 80;
+unsigned long currentTime = 0;
+unsigned long previousTime = 0;
 
-String ssid;
+TwoWire oledI2c = TwoWire(0);
+Adafruit_SSD1306 display(Constant::OLED_WIDTH, Constant::OLED_HEIGHT, &oledI2c, -1);
+DHT dhtSensor(Constant::DHT_SDA_PIN, Constant::DHT_TYPE);
+
+String WiFiSsid;
+String WiFiPassword;
+
+String username;
 String password;
 
-unsigned long lastTime = 0;
-unsigned long timeOutInterval = 60000;
-unsigned long reconnectInterval = 3000;
+String hotspotSsid;
+String hotspotPassword;
 
-const char *PARAM_1 = "ssid";
-const char *PARAM_2 = "password";
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
 
-const char *ssid_path = "/ssid.txt";
-const char *password_path = "/password.txt";
+bool isBlynkConnected = false;
+bool isFirebaseConnected = false;
+bool isInternetConnected = false;
 
-AsyncWebServer server(80);
-LiquidCrystal_I2C *lcd = nullptr;
-DHT dht(DHT_PIN, DHT_TYPE);
-
-struct DHTData
+void resetWiFiConf()
 {
-  float temperature;
-  float humidity;
-};
-
-String processor(const String &var)
-{
-  if (var == "IP_ADDRESS")
-  {
-    String ipAddress = WiFi.localIP().toString();
-    return ipAddress;
-  }
-
-  if (var == "SSID")
-  {
-    return ssid.isEmpty() ? "Not Set" : ssid;
-  }
-
-  if (var == "TEMPERATURE")
-  {
-    DHTData data = readDHT();
-    return String(data.temperature);
-  }
-  if (var == "HUMIDITY")
-  {
-    DHTData data = readDHT();
-    return String(data.humidity);
-  }
-  return String();
+  WiFiFile::deleteWifiPassword();
+  WiFiFile::deleteWifiSsid();
+  Serial.println(Constant::RESET_CONF_MESSAGE);
+  ESP.restart();
 }
 
-void initLittleFS()
+bool initWifi(const char *ssid, const char *password)
 {
-  if (!LittleFS.begin())
-  {
-    Serial.println("LittleFS Mount Failed");
-    return;
-  }
+  WiFi.begin(ssid, password);
+  Serial.println(Constant::WIFI_CONNECTING_MESSAGE);
 
-  Serial.println("LittleFS Mounted Successfully");
-}
-
-DHTData readDHT()
-{
-  float temperature = dht.readTemperature();
-  float humidity = dht.readHumidity();
-
-  if (isnan(temperature) || isnan(humidity))
-  {
-    Serial.println("Failed to read from DHT sensor!");
-    return {0, 0};
-  }
-
-  return {temperature, humidity};
-}
-
-String getSensorData()
-{
-  DHTData data = readDHT();
-  StaticJsonDocument<300> SensorData;
-  SensorData['temperature'] = data.temperature;
-  SensorData['humidity'] = data.humidity;
-  String jsonString;
-  serializeJson(SensorData, jsonString);
-  return jsonString;
-}
-
-LiquidCrystal_I2C *initLCD()
-{
-  byte lcdAddress = findLCD();
-  if (lcdAddress == 0)
-  {
-    Serial.println("No I2C LCD Found");
-    return nullptr;
-  }
-
-  Serial.printf("I2C LCD found at address 0x%02X\n", lcdAddress);
-  LiquidCrystal_I2C *lcd = new LiquidCrystal_I2C(lcdAddress, 16, 2);
-  lcd->init();
-  lcd->backlight();
-  lcd->clear();
-  lcd->setCursor(0, 0);
-  lcd->print("Initializing...");
-  delay(1000);
-  lcd->clear();
-  return lcd;
-}
-
-bool isValid(File file)
-{
-  if (!file || file.isDirectory())
-  {
-    Serial.println("Failed to open file for reading");
-    file.close();
-    return false;
-  }
-  return true;
-}
-
-byte findLCD()
-{
-  byte error, address;
-  Wire.begin();
-  Serial.println("Scanning for I2C devices...");
-  for (address = 1; address <= 127; address++)
-  {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-    if (error == 0)
-    {
-      return address;
-    }
-    else if (error == 4)
-    {
-      Serial.printf("Unknown error at address 0x%02X\n", address);
-    }
-    else if (error == 2)
-    {
-      Serial.printf("Address 0x%02X is not responding\n", address);
-    }
-    else if (error == 1)
-    {
-      Serial.printf("Address 0x%02X is busy\n", address);
-    }
-    else if (error == 3)
-    {
-      Serial.printf("Address 0x%02X is not connected\n", address);
-    }
-  }
-
-  return 0;
-}
-
-String readFile(fs::FS &fs, const char *path)
-{
-  File file = fs.open(path, FILE_READ);
-  if (!isValid(file))
-  {
-    Serial.println("File not found or is a directory");
-    return String();
-  }
-
-  String content;
-  while (file.available())
-  {
-    content += file.readStringUntil('\n');
-    break;
-  }
-  file.close();
-  return content;
-}
-
-String readSSID()
-{
-  return readFile(LittleFS, ssid_path);
-}
-
-String readPassword()
-{
-  return readFile(LittleFS, password_path);
-}
-
-bool updateConfig(AsyncWebServerRequest *request)
-{
-
-  if (!request->hasParam(PARAM_1) || !request->hasParam(PARAM_2))
-  {
-    Serial.println("Missing parameters");
-    return false;
-  }
-  if (request->params() > 2)
-  {
-    Serial.println("Too many parameters");
-    return false;
-  }
-  if (request->params() < 2)
-  {
-    Serial.println("Not enough parameters");
-    return false;
-  }
-  if (request->params() == 0)
-  {
-    Serial.println("No parameters found");
-    return false;
-  }
-  int paramsCount = request->params();
-  for (int i = 0; i < paramsCount; i++)
-  {
-    const AsyncWebParameter *p = request->getParam(i);
-    if (p->name() == PARAM_1)
-    {
-      ssid = p->value();
-      writeFile(LittleFS, ssid_path, ssid);
-    }
-    else if (p->name() == PARAM_2)
-    {
-      password = p->value();
-      writeFile(LittleFS, password_path, password);
-    }
-  }
-
-  return true;
-}
-
-void writeFile(fs::FS &fs, const char *path, const String &message)
-
-{
-  File file = fs.open(path, FILE_WRITE);
-  if (!isValid(file))
-  {
-    Serial.println("Failed to open file for writing");
-    return;
-  }
-
-  if (file.print(message))
-  {
-    Serial.println("File written successfully");
-  }
-  else
-  {
-    Serial.println("Write failed");
-  }
-  file.close();
-}
-
-void configUpdated()
-{
-  lcd->clear();
-  lcd->setCursor(0, 0);
-  lcd->print("Config Updated");
-  lcd->setCursor(0, 1);
-  lcd->print("Restarting...");
-  delay(2000);
-}
-
-void serveOnConnect()
-{
-
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(LittleFS, "/index.html", "text/html", false, processor); });
-
-  server.on("/sensor", HTTP_GET, [](AsyncWebServerRequest *request)
-            {
-              String sensorData = getSensorData();
-              request->send(200, "application/json", sensorData); });
-
-  server.on("/changeConfig", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(LittleFS, "/wifiManager.html", "text/html", false, processor); });
-
-  server.on("/changeConfig", HTTP_POST, [](AsyncWebServerRequest *request)
-            {
-              if (updateConfig(request))
-              {
-                configUpdated();
-                request->send(200, "text/plain", "Config updated");
-                ESP.restart();
-              }
-              else
-              {
-                request->send(400, "text/plain", "Invalid request");
-              } });
-
-  server.serveStatic("/", LittleFS, "/");
-  server.begin();
-}
-
-void serveOnDisconnect()
-{
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(LittleFS, "/wifiManager.html", "text/html", false, processor); });
-
-  server.on("/", HTTP_POST, [](AsyncWebServerRequest *request)
-            {
-    if (updateConfig(request))
-    {
-      configUpdated();
-      request->send(200, "text/plain", "Config updated");
-      ESP.restart();
-    }
-    else
-    {
-      request->send(400, "text/plain", "Invalid request");
-    } });
-  server.serveStatic("/", LittleFS, "/");
-}
-
-void deleteFile(fs::FS &fs, const char *path)
-{
-  if (fs.exists(path))
-  {
-    if (fs.remove(path))
-    {
-      Serial.printf("File %s deleted successfully\n", path);
-    }
-    else
-    {
-      Serial.printf("Failed to delete file %s\n", path);
-    }
-  }
-  else
-  {
-    Serial.printf("File %s does not exist\n", path);
-  }
-}
-
-void deleteSSID()
-{
-  deleteFile(LittleFS, ssid_path);
-}
-
-void deletePassword()
-{
-  deleteFile(LittleFS, password_path);
-}
-
-bool initWifi()
-{
-  if (ssid.isEmpty() || password.isEmpty())
-  {
-    Serial.println("SSID or Password is empty, cannot connect to WiFi");
-    return false;
-  }
-  unsigned long currentTime;
-  WiFi.begin(ssid.c_str(), password.c_str());
-  Serial.print("Connecting to WiFi");
   while (WiFi.status() != WL_CONNECTED)
   {
     currentTime = millis();
-    if (currentTime - lastTime < timeOutInterval)
+    if (Constant::CONNECTION_TIMEOUT - currentTime >= 0)
     {
-      if (currentTime - lastTime > reconnectInterval)
+      if (currentTime - previousTime >= Constant::RECONNECT_INTERVAL)
       {
         Serial.print(".");
-        lastTime = currentTime;
+        previousTime = currentTime;
       }
     }
     else
     {
-      Serial.println();
-      Serial.println("Connection timed out, restarting...");
-      lcd->clear();
-      lcd->setCursor(0, 0);
-      lcd->print("Connection timed out");
-      lcd->setCursor(0, 1);
-      lcd->print("Restarting...");
-      delay(2000);
-      lcd->clear();
-      WiFi.disconnect();
-      deleteSSID();
-      deletePassword();
-      ESP.restart();
+      Serial.println(Constant::CONNECTION_TIMEOUT_MESSAGE);
       return false;
     }
   }
 
-  Serial.println();
-  Serial.println("Connected to WiFi");
-  Serial.print("IP Address: ");
-  Serial.println(WiFi.localIP());
   return true;
+}
+
+void initDisplay()
+{
+  if (!oledI2c.begin(Constant::OLED_SDA_PIN, Constant::OLED_SCL_PIN))
+  {
+    Serial.println(Constant::OLED_INIT_FAILED_MESSAGE);
+    return;
+  }
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
+  {
+    Serial.println(Constant::OLED_INIT_FAILED_MESSAGE);
+    return;
+  }
+}
+
+bool initHotspot(const char *ssid, const char *password)
+{
+  if (WiFi.softAP(ssid, password))
+  {
+    Serial.println(Constant::HOTSPOT_STARTED_MESSAGE);
+    return true;
+  }
+  else
+  {
+    Serial.println(Constant::HOTSPOT_START_FAILED_MESSAGE);
+    return false;
+  }
+}
+
+bool initFireBase()
+{
+  config.api_key = Constant::FIREBASE_AUTH_TOKEN;
+  config.database_url = Constant::FIREBASE_DB_URL;
+  auth.user.email = Constant::FIREBASE_AUTH_EMAIL;
+  auth.user.password = Constant::FIREBASE_AUTH_PASSWORD;
+  config.signer.test_mode = true; // Set to false for production
+  config.signer.signup = true;    // Set to false for production
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+  Serial.println(Constant::FIREBASE_INIT_MESSAGE);
+  if (!Firebase.ready())
+  {
+    isFirebaseConnected = false;
+    return false;
+  }
+
+  Serial.println(Constant::FIREBASE_INIT_MESSAGE);
+  isFirebaseConnected = true;
+  return true;
+}
+
+bool initBlynk()
+{
+  Blynk.config(Constant::BLYNK_AUTH_TOKEN, Constant::BLYNK_SERVER, Constant::BLYNK_PORT);
+  unsigned long startTime = millis();
+  Serial.println(Constant::BLYNK_INIT_MESSAGE);
+  while (!Blynk.connected())
+  {
+    if (millis() - startTime > Constant::BLYNK_TIMEOUT)
+    {
+      isBlynkConnected = false;
+      return false;
+    }
+    Serial.print(".");
+    delay(1000);
+  }
+
+  Serial.println(Constant::BLYNK_INIT_SUCCES_MESSAGE);
+  isBlynkConnected = true;
+  return true;
+}
+
+bool findWifiCredentials()
+{
+
+  WiFiSsid = WiFiFile::readWifiSsid();
+  WiFiPassword = WiFiFile::readWifiPassword();
+  if (WiFiSsid.isEmpty() || WiFiPassword.isEmpty())
+  {
+    return false;
+  }
+  return true;
+}
+
+bool findHotspotCredentials()
+{
+  bool hotspotSsidExists = WiFiFile::isHotspotSsidExists();
+  bool hotspotPasswordExists = WiFiFile::isHotspotPasswordExists();
+  if (!hotspotSsidExists || !hotspotPasswordExists)
+  {
+    hotspotSsid = Constant::DEFAULT_HOTSPOT_SSID;
+    hotspotPassword = Constant::DEFAULT_HOTSPOT_PASSWORD;
+    if (!WiFiFile::writeHotspotSsid(hotspotSsid) ||
+        !WiFiFile::writeHotspotPassword(hotspotPassword))
+    {
+      return false;
+    }
+
+    return true;
+  }
+
+  hotspotSsid = WiFiFile::readHotspotSsid();
+  hotspotPassword = WiFiFile::readHotspotPassword();
+
+  return true;
+}
+
+bool findUserCredentials()
+{
+  bool usernameExists = UserFile::isUsernameExists();
+  bool passwordExists = UserFile::isPasswordExists();
+  if (!usernameExists || !passwordExists)
+  {
+    username = Constant::DEFAULT_USERNAME;
+    password = Constant::DEFAULT_PASSWORD;
+    if (!UserFile::writeUsername(username) || !UserFile::writePassword(password))
+    {
+      return false;
+    }
+
+    return true;
+  }
+
+  username = UserFile::readUsername();
+  password = UserFile::readPassword();
+
+  return true;
+}
+
+bool checkInternetConnection()
+{
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println(Constant::CHECKING_INTERNET_MESSAGE);
+    HTTPClient http;
+    http.setTimeout(Constant::INTERNET_CHECK_TIMEOUT);
+    http.begin(Constant::INTERNET_CHECK_URL);
+    int httpCode = http.GET();
+    if (httpCode > 0 && httpCode == HTTP_CODE_OK)
+    {
+      Serial.println(Constant::INTERNET_CONNECTED_MESSAGE);
+      isInternetConnected = true;
+      return true;
+    }
+    http.end();
+  }
+  isInternetConnected = false;
+  return false;
+}
+
+void handleWiFiConnection()
+{
+  if (initWifi(WiFiSsid.c_str(), WiFiPassword.c_str()))
+  {
+    if (!checkInternetConnection())
+    {
+      Serial.println(Constant::NO_INTERNET_MESSAGE);
+      return;
+    }
+
+    if (!initFireBase())
+    {
+      Serial.println(Constant::FIREBASE_INIT_FAILED_MESSAGE);
+      return;
+    }
+
+    if (!initBlynk())
+    {
+      Serial.println(Constant::BLYNK_INIT_FAILED_MESSAGE);
+      return;
+    }
+  }
+  else
+  {
+    resetWiFiConf();
+  }
+}
+
+void handleHotspotConnection()
+{
 }
 
 void setup()
 {
+  oledI2c.begin(Constant::OLED_SDA_PIN, Constant::OLED_SCL_PIN);
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+  dhtSensor.begin();
   Serial.begin(115200);
-  initLittleFS();
-  ssid = readSSID();
-  password = readPassword();
-  dht.begin();
-  lcd = initLCD();
-  Blynk.config(AUTH_TOKEN, BLYNK_SERVER, BLYNK_PORT);
+  if (!findHotspotCredentials())
+  {
+    Serial.println("Failed to find or write hotspot credentials.");
+    return;
+  }
+
+  if (!findUserCredentials())
+  {
+    Serial.println("Failed to find or write user credentials.");
+    return;
+  }
+
+  if (findWifiCredentials())
+  {
+    handleWiFiConnection();
+  }
+  else
+  {
+    handleHotspotConnection();
+  }
 }
