@@ -5,12 +5,11 @@
 #include <Wire.h>
 #include <Adafruit_SSD1306.h>
 #include <DHT.h>
-#include <Adafruit_GFX.h>
 #include <Sensor.h>
-#include <WiFi.h>
-#include <HTTPClient.h>
-#include <Firebase_ESP_Client.h>
-#include <BlynkSimpleEsp32.h>
+#include <Utils.h>
+#include <CustomJWT.h>
+
+CustomJWT jwt(Constant::JWT_SECRET, 512);
 
 unsigned long currentTime = 0;
 unsigned long previousTime = 0;
@@ -32,114 +31,52 @@ FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-bool isBlynkConnected = false;
-bool isFirebaseConnected = false;
-bool isInternetConnected = false;
+volatile bool isInternetConnected = false;
+volatile bool isBlynkConnected = false;
+volatile bool isFirebaseConnected = false;
 
-void resetWiFiConf()
+void reconnectTask(void *pvParameters)
 {
-  WiFiFile::deleteWifiPassword();
-  WiFiFile::deleteWifiSsid();
-  Serial.println(Constant::RESET_CONF_MESSAGE);
-  ESP.restart();
-}
-
-bool initWifi(const char *ssid, const char *password)
-{
-  WiFi.begin(ssid, password);
-  Serial.println(Constant::WIFI_CONNECTING_MESSAGE);
-
-  while (WiFi.status() != WL_CONNECTED)
+  unsigned long internetPreviousTime = millis();
+  unsigned long blynkPreviousTime = millis();
+  unsigned long firebasePreviousTime = millis();
+  for (;;)
   {
-    currentTime = millis();
-    if (Constant::CONNECTION_TIMEOUT - currentTime >= 0)
+    if (WiFi.status() != WL_CONNECTED)
     {
-      if (currentTime - previousTime >= Constant::RECONNECT_INTERVAL)
-      {
-        Serial.print(".");
-        previousTime = currentTime;
-      }
+      isInternetConnected = false;
     }
     else
     {
-      Serial.println(Constant::CONNECTION_TIMEOUT_MESSAGE);
-      return false;
+      if (millis() - internetPreviousTime >= Constant::INTERNET_CHECK_BACKGROUND_INTERVAL)
+      {
+        internetPreviousTime = millis();
+        isInternetConnected = Utils::isInternetConnectedBackground();
+      }
     }
-  }
 
-  return true;
-}
-
-void initDisplay()
-{
-  if (!oledI2c.begin(Constant::OLED_SDA_PIN, Constant::OLED_SCL_PIN))
-  {
-    Serial.println(Constant::OLED_INIT_FAILED_MESSAGE);
-    return;
-  }
-
-  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C))
-  {
-    Serial.println(Constant::OLED_INIT_FAILED_MESSAGE);
-    return;
-  }
-}
-
-bool initHotspot(const char *ssid, const char *password)
-{
-  if (WiFi.softAP(ssid, password))
-  {
-    Serial.println(Constant::HOTSPOT_STARTED_MESSAGE);
-    return true;
-  }
-  else
-  {
-    Serial.println(Constant::HOTSPOT_START_FAILED_MESSAGE);
-    return false;
-  }
-}
-
-bool initFireBase()
-{
-  config.api_key = Constant::FIREBASE_AUTH_TOKEN;
-  config.database_url = Constant::FIREBASE_DB_URL;
-  auth.user.email = Constant::FIREBASE_AUTH_EMAIL;
-  auth.user.password = Constant::FIREBASE_AUTH_PASSWORD;
-  config.signer.test_mode = true; // Set to false for production
-  config.signer.signup = true;    // Set to false for production
-  Firebase.begin(&config, &auth);
-  Firebase.reconnectWiFi(true);
-  Serial.println(Constant::FIREBASE_INIT_MESSAGE);
-  if (!Firebase.ready())
-  {
-    isFirebaseConnected = false;
-    return false;
-  }
-
-  Serial.println(Constant::FIREBASE_INIT_MESSAGE);
-  isFirebaseConnected = true;
-  return true;
-}
-
-bool initBlynk()
-{
-  Blynk.config(Constant::BLYNK_AUTH_TOKEN, Constant::BLYNK_SERVER, Constant::BLYNK_PORT);
-  unsigned long startTime = millis();
-  Serial.println(Constant::BLYNK_INIT_MESSAGE);
-  while (!Blynk.connected())
-  {
-    if (millis() - startTime > Constant::BLYNK_TIMEOUT)
+    if (!isInternetConnected)
     {
+      isFirebaseConnected = false;
       isBlynkConnected = false;
-      return false;
+      vTaskDelay(5000 / portTICK_PERIOD_MS); // Wait for 5 seconds before next check
+      continue;
     }
-    Serial.print(".");
-    delay(1000);
-  }
 
-  Serial.println(Constant::BLYNK_INIT_SUCCES_MESSAGE);
-  isBlynkConnected = true;
-  return true;
+    if (millis() - blynkPreviousTime >= Constant::BLYNK_CHECK_BACKGROUND_INTERVAL)
+    {
+      blynkPreviousTime = millis();
+      isBlynkConnected = Utils::connectToBlynk();
+    }
+
+    if (millis() - firebasePreviousTime >= Constant::FIREBASE_CHECK_BACKGROUND_INTERVAL)
+    {
+      firebasePreviousTime = millis();
+      isFirebaseConnected = Utils::connectToFirebase(auth, config);
+    }
+
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+  }
 }
 
 bool findWifiCredentials()
@@ -199,83 +136,87 @@ bool findUserCredentials()
   return true;
 }
 
-bool checkInternetConnection()
+bool handleWiFiConnection()
 {
-  if (WiFi.status() == WL_CONNECTED)
+  if (!Utils::initWifi())
   {
-    Serial.println(Constant::CHECKING_INTERNET_MESSAGE);
-    HTTPClient http;
-    http.setTimeout(Constant::INTERNET_CHECK_TIMEOUT);
-    http.begin(Constant::INTERNET_CHECK_URL);
-    int httpCode = http.GET();
-    if (httpCode > 0 && httpCode == HTTP_CODE_OK)
-    {
-      Serial.println(Constant::INTERNET_CONNECTED_MESSAGE);
-      isInternetConnected = true;
-      return true;
-    }
-    http.end();
+    Serial.println(Constant::CONNECTION_TIMEOUT_MESSAGE);
+    Utils::resetWiFiConf();
+    return false;
   }
-  isInternetConnected = false;
-  return false;
+
+  bool isInternetConnected = Utils::isInternetConnectedForeground();
+  bool isBlynkConnected = Utils::connectToBlynk();
+  bool isFirebaseConnected = Utils::connectToFirebase(auth, config);
+  Serial.println(Constant::WIFI_CONNECTED_MESSAGE);
+  Serial.println(Constant::BLYNK_INIT_MESSAGE);
+  Serial.println(Constant::FIREBASE_INIT_MESSAGE);
+  if (!isInternetConnected)
+  {
+    Serial.println(Constant::NO_INTERNET_MESSAGE);
+  }
+
+  if (!isFirebaseConnected)
+  {
+    Serial.println(Constant::FIREBASE_INIT_FAILED_MESSAGE);
+  }
+
+  if (!isBlynkConnected)
+  {
+    Serial.println(Constant::BLYNK_INIT_FAILED_MESSAGE);
+  }
+
+  if (isInternetConnected)
+  {
+    Serial.println(Constant::INTERNET_CONNECTED_MESSAGE);
+  }
+
+  if (isFirebaseConnected)
+  {
+    Serial.println(Constant::FIREBASE_INIT_SUCCES_MESSAGE);
+  }
+
+  if (isBlynkConnected)
+  {
+    Serial.println(Constant::BLYNK_INIT_SUCCES_MESSAGE);
+  }
+
+  bool isInfraReady = isInternetConnected && isBlynkConnected && isFirebaseConnected;
+
+  return isInfraReady;
 }
 
-void handleWiFiConnection()
-{
-  if (initWifi(WiFiSsid.c_str(), WiFiPassword.c_str()))
-  {
-    if (!checkInternetConnection())
-    {
-      Serial.println(Constant::NO_INTERNET_MESSAGE);
-      return;
-    }
-
-    if (!initFireBase())
-    {
-      Serial.println(Constant::FIREBASE_INIT_FAILED_MESSAGE);
-      return;
-    }
-
-    if (!initBlynk())
-    {
-      Serial.println(Constant::BLYNK_INIT_FAILED_MESSAGE);
-      return;
-    }
-  }
-  else
-  {
-    resetWiFiConf();
-  }
-}
-
-void handleHotspotConnection()
+bool handleHotspotConnection()
 {
 }
 
 void setup()
 {
-  oledI2c.begin(Constant::OLED_SDA_PIN, Constant::OLED_SCL_PIN);
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   dhtSensor.begin();
   Serial.begin(115200);
+
+  if (!Utils::initDisplay(display, oledI2c))
+  {
+    Serial.println(Constant::OLED_INIT_FAILED_MESSAGE);
+  }
+
   if (!findHotspotCredentials())
   {
-    Serial.println("Failed to find or write hotspot credentials.");
-    return;
+    Serial.println(Constant::WIFI_CREDENTIALS_NOT_FOUND_MESSAGE);
   }
 
   if (!findUserCredentials())
   {
-    Serial.println("Failed to find or write user credentials.");
-    return;
+    Serial.println(Constant::USER_CREDENTIALS_NOT_FOUND_MESSAGE);
   }
 
-  if (findWifiCredentials())
+  if (!findWifiCredentials())
   {
-    handleWiFiConnection();
+    bool isHotspotReady = handleHotspotConnection();
   }
   else
   {
-    handleHotspotConnection();
+    bool isInfraReady = handleWiFiConnection();
+    xTaskCreatePinnedToCore(reconnectTask, "Reconnect Task", 4096, NULL, 1, NULL, 1);
   }
 }

@@ -21,6 +21,7 @@ namespace UserFile
   bool isPasswordExists();
   bool isDefaultUsernameExists();
   bool isDefaultPasswordExists();
+  bool saveUserCredentials(const String &username, const String &password);
 
 }
 

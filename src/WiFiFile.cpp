@@ -85,4 +85,12 @@ namespace WiFiFile
     return FileUtils::fileExists(Constant::WIFI_PASSWORD_PATH);
   }
 
+  bool saveWiFiCredentials(const String &ssid, const String &password)
+  {
+    if (!writeWifiSsid(ssid) || !writeWifiPassword(password))
+    {
+      return false; // Failed to write WiFi credentials
+    }
+    return true; // Successfully saved WiFi credentials
+  }
 }

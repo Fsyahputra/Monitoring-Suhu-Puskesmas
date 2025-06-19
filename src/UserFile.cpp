@@ -85,4 +85,13 @@ namespace UserFile
     return FileUtils::fileExists(Constant::DEFAULT_PASSWORD_PATH);
   }
 
+  bool saveUserCredentials(const String &username, const String &password)
+  {
+    if (!writeUsername(username) || !writePassword(password))
+    {
+      return false; // Failed to write user credentials
+    }
+    return true; // Successfully saved user credentials
+  }
+
 }

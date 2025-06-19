@@ -26,6 +26,8 @@ namespace WiFiFile
   bool isWifiSsidExists();
   bool isWifiPasswordExists();
 
+  bool saveWiFiCredentials(const String &ssid, const String &password);
+
 }
 
 #endif

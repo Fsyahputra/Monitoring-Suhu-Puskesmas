@@ -47,11 +47,15 @@ namespace Constant
   const int OLED_HEIGHT = 64;      // OLED height
 
   // Timeout and Intervals
-  const int CONNECTION_TIMEOUT = 10000;    // 10 seconds
-  const int SENSOR_READ_INTERVAL = 5000;   // 5 seconds
-  const int RECONNECT_INTERVAL = 3000;     // 3 seconds
-  const int INTERNET_CHECK_TIMEOUT = 5000; // 5 seconds
-  const int BLYNK_TIMEOUT = 15000;
+  const unsigned long CONNECTION_TIMEOUT = 10000;    // 10 seconds
+  const unsigned long SENSOR_READ_INTERVAL = 5000;   // 5 seconds
+  const unsigned long RECONNECT_INTERVAL = 3000;     // 3 seconds
+  const unsigned long INTERNET_CHECK_TIMEOUT = 5000; // 5 seconds
+  const unsigned long BLYNK_TIMEOUT = 15000;
+  const unsigned long INTERNET_CHECK_BACKGROUND_INTERVAL = 60000; // 1 minute
+  const unsigned long BLYNK_CHECK_BACKGROUND_INTERVAL = 60000;    // 1 minute
+  const unsigned long FIREBASE_CHECK_BACKGROUND_INTERVAL = 60000; // 1 minute
+  const unsigned long INTERNET_CHECK_BACKGROUND_TIMEOUT = 3000;
 
   // Messages
   const char *const BOOT_MESSAGE = "Memulai Sistem...";
@@ -60,6 +64,7 @@ namespace Constant
   const char *const WIFI_CONNECTED_MESSAGE = "Terhubung ke WiFi";
   const char *const CHECKING_INTERNET_MESSAGE = "Memeriksa Koneksi Internet...";
   const char *const INTERNET_CONNECTED_MESSAGE = "Koneksi Internet Tersedia";
+  const char *const NO_INTERNET_CONNECTION_MESSAGE = "Tidak Ada Koneksi Internet";
   const char *const CONNECTION_TIMEOUT_MESSAGE = "Timeout Tercapai, Wifi Yang anda Masukkan Tidak Terdeteksi Silakan Configurasi Ulang";
   const char *const HOTSPOT_STARTED_MESSAGE = "Hotspot Dimulai";
   const char *const HOTSPOT_START_FAILED_MESSAGE = "Gagal Memulai Hotspot";
@@ -73,11 +78,14 @@ namespace Constant
   const char *const BLYNK_INIT_MESSAGE = "Menginisialisasi Blynk...";
   const char *const BLYNK_INIT_SUCCES_MESSAGE = "Blynk Berhasil Diinisialisasi";
   const char *const BLYNK_INIT_FAILED_MESSAGE = "Gagal Inisialisasi Blynk";
+  const char *const WIFI_CREDENTIALS_NOT_FOUND_MESSAGE = "Kredensial WiFi Tidak Ditemukan, Silakan Masukkan SSID dan Password WiFi";
+  const char *const USER_CREDENTIALS_NOT_FOUND_MESSAGE = "Kredensial Pengguna Tidak Ditemukan, Silakan Masukkan Username dan Password";
 
   // Server
 
   const int SERVER_PORT = 80;
   const char *const NTP_SERVER = "pool.ntp.org";
+  char JWT_SECRET[] = "strong_secret_key";
 
   // Timezone
   const char *const TIMEZONE = "WITA+8"; // Indonesia Western Time (WITA)
@@ -106,5 +114,5 @@ namespace Constant
 
   const char *const DEFAULT_WIFI_SSID = "Your_WiFi_SSID";
   const char *const DEFAULT_WIFI_PASSWORD = "Your_WiFi_Password";
-}
+};
 #endif

@@ -6,7 +6,7 @@
 
 namespace Server
 {
-  void serverProcess(bool isInfraReady, FirebaseData &fbdo, AsyncWebServer &server);
+  void serverProcess(FirebaseData &fbdo, AsyncWebServer &server, DHT &dhtSensor, CustomJWT &jwt);
 }
 
 #endif // SERVER_H
